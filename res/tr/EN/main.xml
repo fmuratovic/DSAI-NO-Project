@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<Translations>
+    <Res id="appTitle"      tr="Economic Dispatch / DC-OPF"/>
+    <Res id="solve"         tr="Solve"/>
+    <Res id="reset"         tr="Reset"/>
+    <Res id="windLabel"     tr="Wind penetration"/>
+    <Res id="includeLosses" tr="Include transmission losses"/>
+    <Res id="generation"    tr="Generation"/>
+    <Res id="prices"        tr="Marginal prices"/>
+    <Res id="flows"         tr="Line flows"/>
+    <Res id="totalCost"     tr="Total fuel cost"/>
+    <Res id="losses"        tr="Transmission losses"/>
+    <Res id="atLimit"       tr="at limit"/>
+    <Res id="infeasible"    tr="No feasible solution"/>
+</Translations>

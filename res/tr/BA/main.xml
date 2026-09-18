@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<Translations>
+    <Res id="appTitle"      tr="Ekonomski dispečing / DC-OPF"/>
+    <Res id="solve"         tr="Riješi"/>
+    <Res id="reset"         tr="Reset"/>
+    <Res id="windLabel"     tr="Udio vjetra"/>
+    <Res id="includeLosses" tr="Uključi gubitke u prenosu"/>
+    <Res id="generation"    tr="Proizvodnja"/>
+    <Res id="prices"        tr="Marginalne cijene"/>
+    <Res id="flows"         tr="Tokovi po vodovima"/>
+    <Res id="totalCost"     tr="Ukupni troškovi goriva"/>
+    <Res id="losses"        tr="Gubici u prenosu"/>
+    <Res id="atLimit"       tr="na granici"/>
+    <Res id="infeasible"    tr="Nema izvodljivog rješenja"/>
+</Translations>

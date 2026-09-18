@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!--
+    Project artwork. Every path below points at an icon confirmed to exist
+    in the SDK's shared Common/Icons folder, so this file cannot fail with
+    a "resource image file does not exist" error.
+
+    Paths are SDK-root relative and carry no "Work/" prefix.
+-->
+<DevRes>
+
+    <Images>
+        <!-- Application icon -->
+        <Res id="appIcon"  path="Common/Icons/mainIcon.png"/>
+
+        <!-- Toolbar / control icons -->
+        <Res id="solve"    path="Common/Icons/ok.png"/>
+        <Res id="reset"    path="Common/Icons/arrow_cycle.png"/>
+        <Res id="settings" path="Common/Icons/SettingsBlue48.png"/>
+        <Res id="info"     path="Common/Icons/Info48.png"/>
+    </Images>
+
+</DevRes>

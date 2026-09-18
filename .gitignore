@@ -1,0 +1,28 @@
+# Visual Studio
+.vs/
+*.vcxproj.filters
+*.vcxproj.user
+*.sln.docstates
+
+# CMake generated files
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+*.cmake.stamp
+
+# Compiled binaries
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# natID build output location
+Out/

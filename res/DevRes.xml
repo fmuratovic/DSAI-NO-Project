@@ -1,0 +1,18 @@
+<?xml version='1.0'?>
+<DevRes regionals="Common/Regionals"
+        displayName="Economic Dispatch"
+        maintainer="Faris Muratovic"
+        email=""
+        homePage=""
+        majorVersion="1"
+        minorVersion="0"
+        versionDate="2026-09-16"
+        comment="Economic dispatch and DC optimal power flow">
+<Langs>
+<Lang id="EN" name="English"/>
+</Langs>
+<ArtWork>
+<Config path="Common/ResConfigs/natGUI.xml"/>
+<Config path=":main.xml"/>
+</ArtWork>
+</DevRes>
