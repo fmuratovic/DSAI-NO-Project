@@ -2,7 +2,9 @@ set(CORE_NAME core)
 set(CLI_NAME  cli)
 set(GUI_NAME  dispatchGui)
 
-set(GUI_STAGE 3 CACHE STRING "natGUI stage to build (0 = none, 1..4)")
+# CHANGED: restored the variable, "app" selects gui/main.cpp (the complete
+# application); 1..4 still select gui/STAGE<n>_main.cpp; 0 skips the GUI.
+set(GUI_STAGE app CACHE STRING "natGUI target to build: 0 = none, 1..4 = STAGEn_main.cpp, app = main.cpp")
 
 file(GLOB CORE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp)
 file(GLOB CORE_HEADERS ${CMAKE_CURRENT_LIST_DIR}/core/*.h)
@@ -33,13 +35,18 @@ setPlatformDLLPath(${CLI_NAME})
 
 if(NOT GUI_STAGE STREQUAL "0")
 
-    set(GUI_MAIN ${CMAKE_CURRENT_LIST_DIR}/gui/STAGE${GUI_STAGE}_main.cpp)
+    # CHANGED: pick main.cpp for "app", STAGEn_main.cpp otherwise
+    if(GUI_STAGE STREQUAL "app")
+        set(GUI_MAIN ${CMAKE_CURRENT_LIST_DIR}/gui/main.cpp)
+    else()
+        set(GUI_MAIN ${CMAKE_CURRENT_LIST_DIR}/gui/STAGE${GUI_STAGE}_main.cpp)
+    endif()
 
     if(NOT EXISTS ${GUI_MAIN})
         message(FATAL_ERROR "GUI_STAGE=${GUI_STAGE} but ${GUI_MAIN} does not exist")
     endif()
 
-    message(STATUS "Building GUI stage ${GUI_STAGE}: ${GUI_MAIN}")
+    message(STATUS "Building GUI (${GUI_STAGE}): ${GUI_MAIN}")
 
     file(GLOB GUI_INC_TD     ${MY_INC}/td/*.h)
     file(GLOB GUI_INC_GUI    ${MY_INC}/gui/*.h)
@@ -71,5 +78,12 @@ if(NOT GUI_STAGE STREQUAL "0")
     setAppIcon(${GUI_NAME} ${CMAKE_CURRENT_LIST_DIR})
     setIDEPropertiesForGUIExecutable(${GUI_NAME} ${CMAKE_CURRENT_LIST_DIR})
     setPlatformDLLPath(${GUI_NAME})
+
+    # CHANGED: the GUI app is a /SUBSYSTEM:WINDOWS executable but uses a plain
+    # main(). gui/WinMain.h sets this via #pragma; this makes it explicit so
+    # the "unresolved external symbol WinMain" link error cannot recur.
+    if(MSVC)
+        target_link_options(${GUI_NAME} PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
 
 endif()

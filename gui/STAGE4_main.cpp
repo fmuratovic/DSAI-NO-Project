@@ -1,24 +1,45 @@
-// stage 4: charts on a Canvas
-// only the 5 functions in plotprim need fixing if the draw API differs
-// set PLOT_WITH_TEXT to 0 if DrawableString/Font are unavailable
+// =====================================================================
+//  GUI STAGE 4 -- the four deliverable charts on a gui::Canvas.
+//
+//    1. incremental cost curves, operating lambda marked
+//    2. dispatch bar chart (with Pmax ghost bars)
+//    3. lambda vs total demand
+//    4. total cost vs wind penetration (lossless + with losses)
+//
+//  Standalone: builds its own network / generators from core::TestNetwork
+//  and runs the sweeps once at construction. Export button writes the
+//  canvas to PDF through Canvas::exportToPDF.
+//
+//  Every natID drawing/text call lives in namespace prim at the top of the
+//  file. Everything below prim is arithmetic on gui::Point / gui::Rect.
+//
+//  natID facts this file relies on (all read from Common/Include):
+//    - Canvas draws in DrawableView::onDraw(const gui::Rect&); repaint via
+//      Frame::reDraw(). Size via Canvas::getSize(gui::Size&).
+//    - gui::Rect is td::RectNormalized {left, top, right, bottom}, y down.
+//    - Lines: static Shape::drawLine / Shape::drawRect. Polylines and
+//      circles: Shape object -> createPolyLine/createCircle -> drawWire /
+//      drawFill / drawFillAndWire.
+//    - Text: static DrawableString::draw(td::String, Rect, Font::ID,
+//      ColorID, TextAlignment, VAlignment). Rect+alignment is used
+//      everywhere so the Point-anchor convention never matters.
+//    - Colors are td::ColorID; SysText tracks light/dark mode.
+//    - SaveFileDialog::show(Frame*, title, ext, wndID, callback).
+// =====================================================================
 
-#define PLOT_WITH_TEXT 1
-
+#include <gui/WinMain.h>       // /entry:mainCRTStartup on Windows so main() links under /SUBSYSTEM:WINDOWS
 #include <gui/Application.h>
 #include <gui/Window.h>
 #include <gui/View.h>
 #include <gui/Canvas.h>
-#include <gui/Label.h>
-#include <gui/Slider.h>
-#include <gui/CheckBox.h>
 #include <gui/Shape.h>
-#include <gui/Color.h>
+#include <gui/DrawableString.h>
+#include <gui/Font.h>
+#include <gui/Label.h>
+#include <gui/Button.h>
 #include <gui/VerticalLayout.h>
 #include <gui/HorizontalLayout.h>
-#if PLOT_WITH_TEXT
-  #include <gui/DrawableString.h>
-  #include <gui/Font.h>
-#endif
+#include <gui/FileDialog.h>
 
 #include <vector>
 #include <string>
@@ -32,315 +53,548 @@
 #include "Sweep.h"
 #include "TestNetwork.h"
 
-namespace plotprim
+// =====================================================================
+//  DRAWING PRIMITIVES -- the only natID drawing calls in the file
+// =====================================================================
+namespace prim
 {
 
-inline gui::Color rgb(int r, int g, int b)
+inline void line(const gui::Point& a, const gui::Point& b, td::ColorID c,
+                 float w = 1.0f, td::LinePattern p = td::LinePattern::Solid)
 {
-    return gui::Color(static_cast<td::BYTE>(r),
-                      static_cast<td::BYTE>(g),
-                      static_cast<td::BYTE>(b));
+    gui::Shape::drawLine(a, b, c, w, p);
 }
 
-inline void fillRect(gui::Canvas& cv, double x, double y, double w, double h,
-                     const gui::Color& col)
-{
-    gui::Shape s;
-    s.createRect(gui::Rect(gui::Point(x, y), gui::Size(w, h)));
-    cv.fillShape(s, col);
-}
-
-inline void drawLine(gui::Canvas& cv, double x1, double y1, double x2, double y2,
-                     const gui::Color& col, double width = 1.0)
-{
-    gui::Shape s;
-    s.moveTo(gui::Point(x1, y1));
-    s.lineTo(gui::Point(x2, y2));
-    cv.drawShape(s, col, width);
-}
-
-inline void drawPolyline(gui::Canvas& cv, const std::vector<gui::Point>& pts,
-                         const gui::Color& col, double width = 1.5)
+inline void polyline(const std::vector<gui::Point>& pts, td::ColorID c,
+                     float w = 2.0f, td::LinePattern p = td::LinePattern::Solid)
 {
     if (pts.size() < 2) return;
     gui::Shape s;
-    s.moveTo(pts.front());
-    for (size_t i = 1; i < pts.size(); ++i) s.lineTo(pts[i]);
-    cv.drawShape(s, col, width);
+    s.createPolyLine(pts.data(), pts.size(), w, p);
+    s.drawWire(c);
 }
 
-inline void drawText(gui::Canvas& cv, double x, double y, const std::string& text,
-                     const gui::Color& col)
+inline void fillRect(const gui::Rect& r, td::ColorID fill)
 {
-#if PLOT_WITH_TEXT
-    gui::DrawableString ds(text.c_str());
-    ds.draw(cv, gui::Point(x, y), col);
-#else
-    (void)cv; (void)x; (void)y; (void)text; (void)col;
-#endif
+    gui::Shape::drawRect(r, fill);
 }
 
+inline void frameRect(const gui::Rect& r, td::ColorID lineColor, float w = 1.0f)
+{
+    gui::Shape::drawRect(r, lineColor, w);
 }
 
-namespace {
+inline void dot(const gui::Point& center, double radius, td::ColorID fill, td::ColorID edge)
+{
+    gui::Shape s;
+    s.createCircle(gui::Circle(center, radius), 1.0f);
+    s.drawFillAndWire(fill, edge);
+}
+
+inline void text(const gui::Rect& r, const std::string& str, gui::Font::ID font,
+                 td::ColorID c,
+                 td::TextAlignment h = td::TextAlignment::Left,
+                 td::VAlignment v = td::VAlignment::Center)
+{
+    td::String s(str.c_str());
+    gui::DrawableString::draw(s, r, font, c, h, v);
+}
+
+} // namespace prim
+
+// =====================================================================
+//  Chart helpers -- pure arithmetic
+// =====================================================================
+namespace chart
+{
 
 struct Series
 {
-    std::string name;
-    std::vector<double> xs, ys;
-    gui::Color colour;
+    std::vector<double> x, y;
+    td::ColorID color = td::ColorID::SteelBlue;
+    float width = 2.0f;
+    td::LinePattern pattern = td::LinePattern::Solid;
+    std::string legend;
 };
 
-std::string num(double v, int prec = 1)
+struct Palette
+{
+    td::ColorID text, grid, axis, bg;
+};
+
+inline Palette palette(bool forExport)
+{
+    Palette p;
+    if (forExport)
+    {
+        p.text = td::ColorID::Black;
+        p.grid = td::ColorID::LightGray;
+        p.axis = td::ColorID::DimGray;
+        p.bg   = td::ColorID::White;
+    }
+    else
+    {
+        const bool dark = gui::Application::isDarkMode();
+        p.text = td::ColorID::SysText;
+        p.grid = dark ? td::ColorID::DarkGray : td::ColorID::LightGray;
+        p.axis = dark ? td::ColorID::Gray     : td::ColorID::DimGray;
+        p.bg   = td::ColorID::SysCtrlBack;
+    }
+    return p;
+}
+
+inline std::string num(double v, int prec)
 {
     std::ostringstream os;
     os << std::fixed << std::setprecision(prec) << v;
     return os.str();
 }
 
-void drawXYChart(gui::Canvas& cv,
-                 double px, double py, double pw, double ph,
-                 const std::string& title,
-                 const std::string& xLabel,
-                 const std::string& yLabel,
-                 const std::vector<Series>& series)
+// "nice" tick step for a data span, roughly nTarget intervals
+inline double niceStep(double span, int nTarget)
 {
-    using namespace plotprim;
-    gui::Color axis = rgb(90, 90, 90);
-    gui::Color grid = rgb(215, 215, 215);
-    gui::Color text = rgb(40, 40, 40);
+    if (span <= 0.0) return 1.0;
+    const double raw = span / nTarget;
+    const double mag = std::pow(10.0, std::floor(std::log10(raw)));
+    const double f = raw / mag;
+    double nf = 1.0;
+    if      (f < 1.5) nf = 1.0;
+    else if (f < 3.0) nf = 2.0;
+    else if (f < 7.0) nf = 5.0;
+    else              nf = 10.0;
+    return nf * mag;
+}
 
-    double mL = 62, mR = 14, mT = 26, mB = 34;
-    double ax = px + mL, ay = py + mT;
-    double aw = pw - mL - mR, ah = ph - mT - mB;
-    if (aw <= 10 || ah <= 10) return;
+inline int decimalsFor(double step)
+{
+    if (step <= 0.0 || step >= 1.0) return 0;
+    return std::min(4, static_cast<int>(std::ceil(-std::log10(step))));
+}
 
-    drawText(cv, px + mL, py + 4, title, text);
+// Plot area + data range -> pixel mapping.
+struct Axes
+{
+    gui::Rect plot;                    // pixel rect of the plotting area
+    double xMin = 0, xMax = 1, yMin = 0, yMax = 1;
 
-    double xMin = 1e300, xMax = -1e300, yMin = 1e300, yMax = -1e300;
+    double px(double x) const
+    { return plot.left + (x - xMin) / (xMax - xMin) * plot.width(); }
+    double py(double y) const
+    { return plot.bottom - (y - yMin) / (yMax - yMin) * plot.height(); }
+    gui::Point p(double x, double y) const { return gui::Point(px(x), py(y)); }
+};
+
+// Expand [lo,hi] to nice tick multiples. Set zeroBased to force lo = 0.
+inline void niceRange(double& lo, double& hi, double& step, bool zeroBased, int nTicks = 5)
+{
+    if (zeroBased) lo = std::min(lo, 0.0);
+    if (hi <= lo) hi = lo + 1.0;
+    step = niceStep(hi - lo, nTicks);
+    lo = std::floor(lo / step) * step;
+    hi = std::ceil (hi / step) * step;
+    if (hi - lo < step) hi = lo + step;
+}
+
+struct Margins { double left = 58, right = 14, top = 30, bottom = 40; };
+
+// Draws title, frame, gridlines, ticks and axis labels. Fills in ax.plot.
+inline void frame(const gui::Rect& panel, const std::string& title,
+                  const std::string& xLabel, const std::string& yLabel,
+                  Axes& ax, double xStep, double yStep, const Palette& pal,
+                  const Margins& m = Margins())
+{
+    using namespace prim;
+
+    ax.plot = gui::Rect(panel.left + m.left, panel.top + m.top,
+                        panel.right - m.right, panel.bottom - m.bottom);
+    if (ax.plot.width() < 20 || ax.plot.height() < 20) return;
+
+    // title
+    text(gui::Rect(panel.left + m.left, panel.top + 4, panel.right - m.right, panel.top + m.top - 4),
+         title, gui::Font::ID::SystemBold, pal.text,
+         td::TextAlignment::Left, td::VAlignment::Center);
+
+    // horizontal grid + y ticks
+    const int yDec = decimalsFor(yStep);
+    for (double v = ax.yMin; v <= ax.yMax + yStep * 1e-6; v += yStep)
+    {
+        const double y = ax.py(v);
+        line(gui::Point(ax.plot.left, y), gui::Point(ax.plot.right, y),
+             pal.grid, 1.0f, td::LinePattern::Dot);
+        text(gui::Rect(panel.left + 2, y - 9, ax.plot.left - 5, y + 9),
+             num(v, yDec), gui::Font::ID::SystemSmaller, pal.text,
+             td::TextAlignment::Right, td::VAlignment::Center);
+    }
+
+    // x ticks (xStep <= 0 -> none, used by the bar chart)
+    const int xDec = decimalsFor(xStep);
+    for (double v = ax.xMin; xStep > 0.0 && v <= ax.xMax + xStep * 1e-6; v += xStep)
+    {
+        const double x = ax.px(v);
+        line(gui::Point(x, ax.plot.bottom), gui::Point(x, ax.plot.bottom + 4), pal.axis, 1.0f);
+        text(gui::Rect(x - 30, ax.plot.bottom + 4, x + 30, ax.plot.bottom + 18),
+             num(v, xDec), gui::Font::ID::SystemSmaller, pal.text,
+             td::TextAlignment::Center, td::VAlignment::Top);
+    }
+
+    // frame
+    frameRect(ax.plot, pal.axis, 1.0f);
+
+    // axis labels
+    text(gui::Rect(ax.plot.left, ax.plot.bottom + 20, ax.plot.right, panel.bottom - 2),
+         xLabel, gui::Font::ID::SystemSmaller, pal.text,
+         td::TextAlignment::Center, td::VAlignment::Center);
+    text(gui::Rect(panel.left + 2, panel.top + 4, ax.plot.left - 5, panel.top + m.top - 4),
+         yLabel, gui::Font::ID::SystemSmaller, pal.text,
+         td::TextAlignment::Right, td::VAlignment::Center);
+}
+
+inline void drawSeries(const Axes& ax, const Series& s)
+{
+    std::vector<gui::Point> pts;
+    pts.reserve(s.x.size());
+    for (size_t i = 0; i < s.x.size() && i < s.y.size(); ++i)
+        pts.push_back(ax.p(s.x[i], s.y[i]));
+    prim::polyline(pts, s.color, s.width, s.pattern);
+}
+
+// Small legend in the top-left corner of the plot area.
+inline void legend(const Axes& ax, const std::vector<Series>& series, const Palette& pal)
+{
+    double y = ax.plot.top + 8;
     for (const auto& s : series)
-        for (size_t i = 0; i < s.xs.size(); ++i)
-        {
-            xMin = std::min(xMin, s.xs[i]); xMax = std::max(xMax, s.xs[i]);
-            yMin = std::min(yMin, s.ys[i]); yMax = std::max(yMax, s.ys[i]);
-        }
-    if (xMin > xMax || yMin > yMax) return;
-    if (std::fabs(xMax - xMin) < 1e-12) xMax = xMin + 1.0;
-    double yPad = (std::fabs(yMax - yMin) < 1e-12)
-                ? std::max(1.0, std::fabs(yMax) * 0.1)
-                : (yMax - yMin) * 0.08;
-    yMin -= yPad; yMax += yPad;
-
-    auto sx = [&](double v) { return ax + (v - xMin) / (xMax - xMin) * aw; };
-    auto sy = [&](double v) { return ay + ah - (v - yMin) / (yMax - yMin) * ah; };
-
-    int nTicks = 5;
-    for (int t = 0; t <= nTicks; ++t)
     {
-        double v = yMin + (yMax - yMin) * t / nTicks;
-        double y = sy(v);
-        drawLine(cv, ax, y, ax + aw, y, grid, 1.0);
-        drawText(cv, px + 6, y - 7, num(v, 2), text);
-    }
-    for (int t = 0; t <= 2; ++t)
-    {
-        double v = xMin + (xMax - xMin) * t / 2.0;
-        drawText(cv, sx(v) - 12, ay + ah + 8, num(v, 1), text);
-    }
-
-    drawLine(cv, ax, ay, ax, ay + ah, axis, 1.5);
-    drawLine(cv, ax, ay + ah, ax + aw, ay + ah, axis, 1.5);
-
-    drawText(cv, px + 4, ay + ah + 8, yLabel, text);
-    drawText(cv, ax + aw - 60, ay + ah + 8, xLabel, text);
-
-    for (const auto& s : series)
-    {
-        std::vector<gui::Point> pts;
-        pts.reserve(s.xs.size());
-        for (size_t i = 0; i < s.xs.size(); ++i)
-            pts.push_back(gui::Point(sx(s.xs[i]), sy(s.ys[i])));
-        drawPolyline(cv, pts, s.colour, 2.0);
+        if (s.legend.empty()) continue;
+        const double x0 = ax.plot.left + 10;
+        prim::line(gui::Point(x0, y + 7), gui::Point(x0 + 22, y + 7), s.color, s.width, s.pattern);
+        prim::text(gui::Rect(x0 + 28, y, x0 + 220, y + 14), s.legend,
+                   gui::Font::ID::SystemSmaller, pal.text);
+        y += 16;
     }
 }
 
-void drawDispatchBars(gui::Canvas& cv,
-                      double px, double py, double pw, double ph,
-                      const std::vector<double>& P,
-                      const std::vector<core::Generator>& gens)
+} // namespace chart
+
+// =====================================================================
+//  The four deliverable charts
+// =====================================================================
+namespace figs
 {
-    using namespace plotprim;
-    gui::Color axis = rgb(90, 90, 90);
-    gui::Color cap  = rgb(210, 220, 235);
-    gui::Color bar  = rgb(70, 110, 190);
-    gui::Color text = rgb(40, 40, 40);
 
-    double mL = 52, mR = 14, mT = 26, mB = 30;
-    double ax = px + mL, ay = py + mT;
-    double aw = pw - mL - mR, ah = ph - mT - mB;
-    if (aw <= 10 || ah <= 10 || P.empty()) return;
+using namespace chart;
 
-    drawText(cv, px + mL, py + 4, "Dispatch by generator (MW)", text);
+static const td::ColorID GEN_COLOR[3] = {
+    td::ColorID::SteelBlue, td::ColorID::DarkOrange, td::ColorID::ForestGreen
+};
+inline td::ColorID genColor(size_t g) { return GEN_COLOR[g % 3]; }
 
-    double maxP = 1.0;
-    for (size_t i = 0; i < P.size() && i < gens.size(); ++i)
-        maxP = std::max(maxP, gens[i].Pmax);
-
-    double slot = aw / static_cast<double>(P.size());
-    double bw = slot * 0.5;
-
-    for (int t = 0; t <= 4; ++t)
-    {
-        double v = maxP * t / 4.0;
-        double y = ay + ah - v / maxP * ah;
-        drawLine(cv, ax, y, ax + aw, y, rgb(220, 220, 220), 1.0);
-        drawText(cv, px + 6, y - 7, num(v, 0), text);
-    }
-
-    for (size_t i = 0; i < P.size(); ++i)
-    {
-        double cx = ax + slot * (static_cast<double>(i) + 0.5);
-        if (i < gens.size())
-        {
-            double hCap = gens[i].Pmax / maxP * ah;
-            fillRect(cv, cx - bw * 0.5, ay + ah - hCap, bw, hCap, cap);
-        }
-        double h = std::max(0.0, P[i]) / maxP * ah;
-        fillRect(cv, cx - bw * 0.5, ay + ah - h, bw, h, bar);
-
-        drawText(cv, cx - 10, ay + ah + 6, "G" + std::to_string(i + 1), text);
-        drawText(cv, cx - 16, ay + ah - h - 15, num(P[i], 1), text);
-    }
-
-    drawLine(cv, ax, ay, ax, ay + ah, axis, 1.5);
-    drawLine(cv, ax, ay + ah, ax + aw, ay + ah, axis, 1.5);
-}
-
-}
-
-class PlotCanvas : public gui::Canvas
+// Fig 1: incremental cost 2aP+b for each generator over [Pmin,Pmax],
+// dashed line at the operating lambda, dot at each generator's dispatch.
+inline void costCurves(const gui::Rect& panel,
+                       const std::vector<core::Generator>& gens,
+                       const core::OPFResult& op, const Palette& pal)
 {
-    std::vector<core::WindPoint> _wind;
-    std::vector<double>          _dispatch;
-    std::vector<core::Generator> _gens;
-    bool _useLosses = false;
-
-public:
-    PlotCanvas() : _gens(core::buildTestGenerators())
+    Axes ax;
+    double xLo = 0.0, xHi = 0.0, yLo = 1e300, yHi = -1e300;
+    for (const auto& g : gens)
     {
-        recompute(0.0, false);
+        xHi = std::max(xHi, g.Pmax);
+        yLo = std::min(yLo, std::min(2.0 * g.a * g.Pmin + g.b, 2.0 * g.a * g.Pmax + g.b));
+        yHi = std::max(yHi, std::max(2.0 * g.a * g.Pmin + g.b, 2.0 * g.a * g.Pmax + g.b));
+    }
+    const double lam = (op.feasible && !op.lambda.empty()) ? op.lambda[0] : 0.0;
+    if (op.feasible) { yLo = std::min(yLo, lam); yHi = std::max(yHi, lam); }
+
+    double xStep, yStep;
+    niceRange(xLo, xHi, xStep, true);
+    niceRange(yLo, yHi, yStep, false);
+    ax.xMin = xLo; ax.xMax = xHi; ax.yMin = yLo; ax.yMax = yHi;
+
+    frame(panel, "Incremental cost curves, lambda marked",
+          "P [MW]", "$/MWh", ax, xStep, yStep, pal);
+    if (ax.plot.width() < 20) return;
+
+    std::vector<Series> all;
+    for (size_t g = 0; g < gens.size(); ++g)
+    {
+        auto curve = core::Sweep::costCurve(gens[g], 41);
+        Series s;
+        s.color = genColor(g);
+        s.legend = "G" + std::to_string(g + 1);
+        for (const auto& pt : curve) { s.x.push_back(pt.P); s.y.push_back(pt.incrementalCost); }
+        drawSeries(ax, s);
+        all.push_back(std::move(s));
     }
 
-    void recompute(double windFrac, bool useLosses)
+    if (op.feasible)
     {
-        _useLosses = useLosses;
-        core::Network net = core::buildTestNetwork(useLosses ? 0.10 : 0.00, 150.0, 1e7);
+        prim::line(ax.p(ax.xMin, lam), ax.p(ax.xMax, lam),
+                   td::ColorID::Crimson, 1.5f, td::LinePattern::Dash);
+        prim::text(gui::Rect(ax.plot.right - 150, ax.py(lam) - 18, ax.plot.right - 4, ax.py(lam) - 2),
+                   "lambda = " + num(lam, 3), gui::Font::ID::SystemSmallerBold,
+                   td::ColorID::Crimson, td::TextAlignment::Right);
+        for (size_t g = 0; g < gens.size() && g < op.P.size(); ++g)
+            prim::dot(ax.p(op.P[g], 2.0 * gens[g].a * op.P[g] + gens[g].b),
+                      4.0, genColor(g), pal.text);
+    }
+    legend(ax, all, pal);
+}
 
-        core::Sweep sweep;
-        _wind = sweep.windSweep(net, _gens, 21, useLosses);
+// Fig 2: dispatch bars with Pmax ghost bars and value labels.
+inline void dispatchBars(const gui::Rect& panel,
+                         const std::vector<core::Generator>& gens,
+                         const core::OPFResult& op, const Palette& pal)
+{
+    Axes ax;
+    double yLo = 0.0, yHi = 0.0;
+    for (const auto& g : gens) yHi = std::max(yHi, g.Pmax);
+    double yStep;
+    niceRange(yLo, yHi, yStep, true);
+    ax.xMin = 0; ax.xMax = static_cast<double>(gens.size());
+    ax.yMin = yLo; ax.yMax = yHi;
+
+    frame(panel, "Optimal dispatch (bars) vs capacity (outline)",
+          "", "MW", ax, 0.0, yStep, pal);
+    if (ax.plot.width() < 20) return;
+
+    const double slot = ax.plot.width() / static_cast<double>(gens.size());
+    const double bw = slot * 0.45;
+
+    for (size_t g = 0; g < gens.size(); ++g)
+    {
+        const double cx = ax.plot.left + slot * (static_cast<double>(g) + 0.5);
+        const gui::Rect cap(cx - bw / 2, ax.py(gens[g].Pmax), cx + bw / 2, ax.py(0.0));
+        prim::frameRect(cap, pal.axis, 1.0f);
+
+        const double P = (op.feasible && g < op.P.size()) ? std::max(0.0, op.P[g]) : 0.0;
+        const gui::Rect bar(cx - bw / 2, ax.py(P), cx + bw / 2, ax.py(0.0));
+        prim::fillRect(bar, genColor(g));
+
+        std::string tag = "G" + std::to_string(g + 1);
+        if (op.feasible && g < op.genAtMax.size() && op.genAtMax[g]) tag += " (at max)";
+        if (op.feasible && g < op.genAtMin.size() && op.genAtMin[g]) tag += " (at min)";
+        prim::text(gui::Rect(cx - slot / 2, ax.plot.bottom + 4, cx + slot / 2, ax.plot.bottom + 18),
+                   tag, gui::Font::ID::SystemSmaller, pal.text, td::TextAlignment::Center,
+                   td::VAlignment::Top);
+        prim::text(gui::Rect(cx - slot / 2, ax.py(P) - 18, cx + slot / 2, ax.py(P) - 2),
+                   num(P, 1) + " MW", gui::Font::ID::SystemSmallerBold, pal.text,
+                   td::TextAlignment::Center, td::VAlignment::Bottom);
+    }
+
+    if (op.feasible)
+    {
+        double sum = 0.0;
+        for (double v : op.P) sum += v;
+        prim::text(gui::Rect(ax.plot.left + 8, ax.plot.top + 6, ax.plot.right - 8, ax.plot.top + 22),
+                   "thermal " + num(sum, 1) + " MW, wind " + num(op.windUsed, 1) +
+                   " MW, cost " + num(op.totalCost, 1),
+                   gui::Font::ID::SystemSmaller, pal.text, td::TextAlignment::Right);
+    }
+}
+
+// Fig 3: system lambda vs total demand, nominal demand marked.
+inline void lambdaVsDemand(const gui::Rect& panel,
+                           const std::vector<core::DemandPoint>& pts,
+                           double nominalDemand, const Palette& pal)
+{
+    Series s;
+    s.color = td::ColorID::Crimson;
+    s.legend = "system lambda";
+    for (const auto& p : pts)
+    {
+        if (!p.feasible) continue;
+        s.x.push_back(p.totalDemand);
+        s.y.push_back(p.systemLambda);
+    }
+    if (s.x.size() < 2) return;
+
+    Axes ax;
+    double xLo = *std::min_element(s.x.begin(), s.x.end());
+    double xHi = *std::max_element(s.x.begin(), s.x.end());
+    double yLo = *std::min_element(s.y.begin(), s.y.end());
+    double yHi = *std::max_element(s.y.begin(), s.y.end());
+    double xStep, yStep;
+    niceRange(xLo, xHi, xStep, false);
+    niceRange(yLo, yHi, yStep, false);
+    ax.xMin = xLo; ax.xMax = xHi; ax.yMin = yLo; ax.yMax = yHi;
+
+    frame(panel, "Marginal price vs total demand", "demand [MW]", "$/MWh",
+          ax, xStep, yStep, pal);
+    if (ax.plot.width() < 20) return;
+
+    if (nominalDemand >= ax.xMin && nominalDemand <= ax.xMax)
+        prim::line(ax.p(nominalDemand, ax.yMin), ax.p(nominalDemand, ax.yMax),
+                   pal.axis, 1.0f, td::LinePattern::Dash);
+    drawSeries(ax, s);
+    legend(ax, { s }, pal);
+}
+
+// Fig 4: total cost vs wind penetration, lossless and with losses.
+inline void costVsWind(const gui::Rect& panel,
+                       const std::vector<core::WindPoint>& lossless,
+                       const std::vector<core::WindPoint>& lossy,
+                       const Palette& pal)
+{
+    Series a, b;
+    a.color = td::ColorID::ForestGreen; a.legend = "lossless";
+    b.color = td::ColorID::SteelBlue;   b.legend = "with losses (r = 10% x)";
+    b.pattern = td::LinePattern::Dash;
+    for (const auto& p : lossless) if (p.feasible) { a.x.push_back(p.penetrationPct); a.y.push_back(p.totalCost); }
+    for (const auto& p : lossy)    if (p.feasible) { b.x.push_back(p.penetrationPct); b.y.push_back(p.totalCost); }
+    if (a.x.size() < 2) return;
+
+    double xLo = 0.0, xHi = 0.0, yLo = 1e300, yHi = -1e300;
+    for (const Series* s : { &a, &b })
+    {
+        for (double v : s->x) xHi = std::max(xHi, v);
+        for (double v : s->y) { yLo = std::min(yLo, v); yHi = std::max(yHi, v); }
+    }
+    Axes ax;
+    double xStep, yStep;
+    niceRange(xLo, xHi, xStep, true);
+    niceRange(yLo, yHi, yStep, false);
+    ax.xMin = xLo; ax.xMax = xHi; ax.yMin = yLo; ax.yMax = yHi;
+
+    frame(panel, "Total fuel cost vs wind penetration", "wind [% of demand]", "cost",
+          ax, xStep, yStep, pal);
+    if (ax.plot.width() < 20) return;
+
+    drawSeries(ax, a);
+    if (b.x.size() >= 2) drawSeries(ax, b);
+    legend(ax, { a, b }, pal);
+}
+
+} // namespace figs
+
+// =====================================================================
+//  Canvas owning the data and painting the 2x2 grid
+// =====================================================================
+class ChartCanvas : public gui::Canvas
+{
+    std::vector<core::Generator>   _gens;
+    core::OPFResult                _op;
+    std::vector<core::DemandPoint> _demand;
+    std::vector<core::WindPoint>   _windLossless;
+    std::vector<core::WindPoint>   _windLossy;
+    double _nominalDemand = 0.0;
+    bool   _forExport = false;
+
+    void compute()
+    {
+        _gens = core::buildTestGenerators();
+
+        // Same cases as cli Part B: limits relaxed, wind 150 MW at bus 4.
+        core::Network net = core::buildTestNetwork(0.0, 150.0, 1e7);
+        for (const auto& b : net.getBuses()) _nominalDemand += b.demand;
 
         core::OPFSolver opf;
-        core::OPFResult r = useLosses
-            ? opf.solveWithLosses(net, _gens, windFrac)
-            : opf.solve(net, _gens, windFrac);
-        _dispatch = r.feasible ? r.P : std::vector<double>(_gens.size(), 0.0);
+        _op = opf.solve(net, _gens, 0.0);
 
-        reDraw();
+        core::Sweep sweep;
+        _demand       = sweep.demandSweep(net, _gens, 0.4, 1.4, 21, false);
+        _windLossless = sweep.windSweep(net, _gens, 21, false);
+
+        core::Network lossy = core::buildTestNetwork(0.10, 150.0, 1e7);
+        _windLossy = sweep.windSweep(lossy, _gens, 11, true);
     }
 
+protected:
     void onDraw(const gui::Rect& /*rect*/) override
     {
-        using namespace plotprim;
+        gui::Size sz;
+        getSize(sz);
+        if (sz.width < 120 || sz.height < 120) return;
 
-        double W = getWidth();
-        double H = getHeight();
-        if (W < 80 || H < 80) return;
+        const chart::Palette pal = chart::palette(_forExport);
+        if (_forExport)
+            prim::fillRect(gui::Rect(0, 0, sz.width, sz.height), pal.bg);
 
-        fillRect(*this, 0, 0, W, H, rgb(252, 252, 252));
-
-        Series lam;  lam.colour = rgb(190, 70, 60);
-        Series cost; cost.colour = rgb(60, 120, 90);
-        Series loss; loss.colour = rgb(120, 90, 170);
-
-        for (const auto& p : _wind)
+        const double gap = 8;
+        const double w = (sz.width  - 3 * gap) / 2;
+        const double h = (sz.height - 3 * gap) / 2;
+        auto cell = [&](int col, int row)
         {
-            if (!p.feasible) continue;
-            lam.xs.push_back(p.penetrationPct);  lam.ys.push_back(p.systemLambda);
-            cost.xs.push_back(p.penetrationPct); cost.ys.push_back(p.totalCost);
-            loss.xs.push_back(p.penetrationPct); loss.ys.push_back(p.totalLoss);
-        }
+            const double x = gap + col * (w + gap);
+            const double y = gap + row * (h + gap);
+            return gui::Rect(x, y, x + w, y + h);
+        };
 
-        double halfW = W * 0.5, halfH = H * 0.5;
+        figs::costCurves    (cell(0, 0), _gens, _op, pal);
+        figs::dispatchBars  (cell(1, 0), _gens, _op, pal);
+        figs::lambdaVsDemand(cell(0, 1), _demand, _nominalDemand, pal);
+        figs::costVsWind    (cell(1, 1), _windLossless, _windLossy, pal);
+    }
 
-        drawXYChart(*this, 0, 0, halfW, halfH,
-                    "Marginal price vs wind penetration", "wind %", "$/MWh", { lam });
+public:
+    ChartCanvas() : gui::Canvas()
+    {
+        compute();
+    }
 
-        drawXYChart(*this, halfW, 0, halfW, halfH,
-                    "Total fuel cost vs wind penetration", "wind %", "cost", { cost });
-
-        drawDispatchBars(*this, 0, halfH, halfW, halfH, _dispatch, _gens);
-
-        if (_useLosses)
-            drawXYChart(*this, halfW, halfH, halfW, halfH,
-                        "Transmission losses vs wind penetration", "wind %", "MW", { loss });
-        else
-            drawText(*this, halfW + 60, halfH + 40,
-                     "enable losses to plot loss curve", rgb(120, 120, 120));
+    bool exportPDF(const td::String& fileName)
+    {
+        _forExport = true;
+        const bool ok = exportToPDF(fileName);
+        _forExport = false;
+        reDraw();
+        return ok;
     }
 };
 
-class PlotView : public gui::View
+// =====================================================================
+class ChartView : public gui::View
 {
-    gui::Label    _windLabel;
-    gui::Slider   _windSlider;
-    gui::CheckBox _lossesBox;
-    PlotCanvas    _canvas;
+    gui::Label  _title;
+    gui::Button _btnExport;
+    gui::Label  _status;
+    ChartCanvas _canvas;
 
-    double _windFrac = 0.0;
+    enum : td::UINT4 { DLG_EXPORT_PDF = 100 };
 
-    void refresh()
+    void onExport()
     {
-        std::ostringstream os;
-        os << "wind penetration: " << std::fixed << std::setprecision(1)
-           << (_windFrac * 100.0) << " %";
-        _windLabel.setTitle(os.str().c_str());
-        _canvas.recompute(_windFrac, _lossesBox.isChecked());
+        gui::SaveFileDialog::show(this, "Export charts to PDF", "pdf", DLG_EXPORT_PDF,
+            [this](gui::FileDialog* dlg)
+            {
+                if (dlg->getStatus() != gui::FileDialog::Status::OK) return;
+                td::String fn = dlg->getFileName();
+                const bool ok = _canvas.exportPDF(fn);
+                _status.setTitle(ok ? "exported" : "export failed");
+            });
     }
-
-    void onWind()
-    {
-        _windFrac = static_cast<double>(_windSlider.getValue()) / 100.0;
-        refresh();
-    }
-    void onLosses() { refresh(); }
 
 public:
-    PlotView()
-        : gui::View(new gui::VerticalLayout())
-        , _windLabel("wind penetration: 0.0 %")
-        , _lossesBox("include transmission losses")
+    ChartView()
+        : gui::View()
+        , _title("Economic Dispatch / DC-OPF -- deliverable charts")
+        , _btnExport("Export PDF")
+        , _status("")
     {
-        _windSlider.setRange(0, 100);
-        _windSlider.setValue(0);
-        _windSlider.onChangedValue(this, &PlotView::onWind);
-        _lossesBox.onClick(this, &PlotView::onLosses);
+        _title.setBold();
+        _btnExport.onClick([this]() { onExport(); });
 
-        _windLabel.setSizeLimits(0, gui::Limit::None, 22, gui::Limit::Fixed);
-        _windSlider.setSizeLimits(0, gui::Limit::None, 28, gui::Limit::Fixed);
-        _lossesBox.setSizeLimits(0, gui::Limit::None, 24, gui::Limit::Fixed);
+        // 3 cells: title, status, button. Count must match append count.
+        gui::HorizontalLayout* row = new gui::HorizontalLayout(3);
+        row->append(_title,     td::HAlignment::Left,  td::VAlignment::Center);
+        row->append(_status,    td::HAlignment::Right, td::VAlignment::Center);
+        row->append(_btnExport, td::HAlignment::Right, td::VAlignment::Center);
 
-        *this << _windLabel << _windSlider << _lossesBox << _canvas;
-        refresh();
+        // 2 cells: the row layout and the canvas.
+        gui::VerticalLayout* main = new gui::VerticalLayout(2);
+        main->appendLayout(*row);
+        main->append(_canvas);
+        setLayout(main);
     }
 };
 
 class MainWindow : public gui::Window
 {
-    PlotView _view;
+    ChartView _view;
 public:
     MainWindow()
-        : gui::Window(gui::Size(1100, 760), "Economic Dispatch / DC-OPF")
+        : gui::Window(gui::Size(1200, 820))
     {
+        setTitle("Economic Dispatch (stage 4 -- charts)");
         setCentralView(&_view);
     }
 };
@@ -356,5 +610,6 @@ public:
 int main(int argc, const char** argv)
 {
     DispatchApp app(argc, argv);
+    app.init("EN");
     return app.run();
 }
