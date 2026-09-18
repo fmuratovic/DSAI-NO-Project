@@ -12,12 +12,23 @@ file(GLOB CORE_HEADERS ${CMAKE_CURRENT_LIST_DIR}/core/*.h)
 add_library(${CORE_NAME} STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 
 target_include_directories(${CORE_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR}/core)
-target_compile_features(${CORE_NAME} PUBLIC cxx_std_17)
+target_compile_features(${CORE_NAME} PUBLIC cxx_std_20)   # natID headers use C++20 concepts
 
 source_group("core" FILES ${CORE_SOURCES} ${CORE_HEADERS})
 
-set(MATRIX_LIB_DEBUG   "${NATID_SDK_LIB}/MatrixD.lib")
-set(MATRIX_LIB_RELEASE "${NATID_SDK_LIB}/Matrix.lib")
+# The sparse solver lives in natID's Matrix library. Its file name follows the
+# same convention as mainUtils on every platform (Windows: MatrixD.lib /
+# Matrix.lib, macOS: Matrix.dylib, Linux: Matrix.so or libMatrix.so), so it
+# is derived from the mainUtils path that natGUI.cmake already resolved
+# rather than hard-coding the Windows ".lib" suffix, which broke macOS/Linux.
+string(REPLACE "mainUtils" "Matrix" MATRIX_LIB_DEBUG   "${MU_LIB_DEBUG}")
+string(REPLACE "mainUtils" "Matrix" MATRIX_LIB_RELEASE "${MU_LIB_RELEASE}")
+foreach(lib IN ITEMS ${MATRIX_LIB_DEBUG} ${MATRIX_LIB_RELEASE})
+    if(NOT EXISTS "${lib}")
+        message(WARNING "natID Matrix library not found at ${lib} (derived from MU_LIB_*); "
+                        "check the library folder of your natID installation")
+    endif()
+endforeach()
 
 target_link_libraries(${CORE_NAME} PUBLIC
     debug     ${MU_LIB_DEBUG}   debug     ${MATRIX_LIB_DEBUG}
